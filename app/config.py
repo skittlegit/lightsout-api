@@ -55,6 +55,11 @@ class Settings(BaseSettings):
 
     retrain_api_key: str = Field(default="", alias="RETRAIN_API_KEY")
 
+    # Weekly auto-retrain schedule (cron syntax, UTC).
+    # Default: every Tuesday at 03:00 UTC (after most race weekends).
+    # Set AUTO_RETRAIN_CRON="" to disable.
+    auto_retrain_cron: str = Field(default="0 3 * * 2", alias="AUTO_RETRAIN_CRON")
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v):
