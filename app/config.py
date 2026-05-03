@@ -4,7 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,13 +17,28 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        env_ignore_empty=True,
     )
 
-    # CORS
-    cors_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3000"],
+    # CORS — stored as raw string so pydantic-settings never JSON-decodes it;
+    # accepts: empty/"" (→ default), JSON array, or comma-separated list.
+    cors_origins_raw: str = Field(
+        default="",
         alias="CORS_ORIGINS",
     )
+
+    @property
+    def cors_origins(self) -> list[str]:
+        import json as _json
+        v = self.cors_origins_raw.strip()
+        if not v:
+            return ["http://localhost:3000"]
+        if v.startswith("["):
+            try:
+                return _json.loads(v)
+            except Exception:
+                pass
+        return [s.strip() for s in v.split(",") if s.strip()]
 
     # Upstream
     jolpica_base_url: str = Field(
@@ -59,13 +74,6 @@ class Settings(BaseSettings):
     # Default: every Tuesday at 03:00 UTC (after most race weekends).
     # Set AUTO_RETRAIN_CRON="" to disable.
     auto_retrain_cron: str = Field(default="0 3 * * 2", alias="AUTO_RETRAIN_CRON")
-
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def _split_csv(cls, v):
-        if isinstance(v, str):
-            return [s.strip() for s in v.split(",") if s.strip()]
-        return v
 
 
 @lru_cache
