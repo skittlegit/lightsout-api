@@ -119,9 +119,28 @@ def build(seasons: range, out_dir: Path) -> None:
     f1.init_cache(settings.fastf1_cache_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Pull every race + quali we can from FastF1
+    # Resume support: load already-pulled rows so we don't re-hit the API.
+    # Race and quali use SEPARATE done-key sets so that quali can be
+    # re-fetched (e.g. with laps=True) without discarding the race cache.
+    checkpoint = out_dir / "_checkpoint.parquet"
+    checkpoint_q = out_dir / "_checkpoint_quali.parquet"
     all_race_rows: list[dict] = []
     all_quali_rows: list[dict] = []
+    race_done_keys: set[tuple] = set()
+    quali_done_keys: set[tuple] = set()
+
+    if checkpoint.exists():
+        prev = pd.read_parquet(checkpoint)
+        all_race_rows = prev.to_dict("records")
+        race_done_keys = {(int(r["season"]), int(r["round"])) for r in all_race_rows}
+        log.info("Resuming: %d race rows already loaded (%d rounds done)", len(all_race_rows), len(race_done_keys))
+    if checkpoint_q.exists():
+        prev_q = pd.read_parquet(checkpoint_q)
+        all_quali_rows = prev_q.to_dict("records")
+        # Only consider a quali round done if it has at least one valid lap time
+        valid_q = prev_q[prev_q["best_quali_s"].notna()]
+        quali_done_keys = {(int(r["season"]), int(r["round"])) for r in valid_q.to_dict("records")}
+        log.info("Resuming: %d quali rows already loaded (%d rounds with valid times)", len(all_quali_rows), len(quali_done_keys))
 
     for season in seasons:
         sched = f1.season_schedule(season)
@@ -129,13 +148,24 @@ def build(seasons: range, out_dir: Path) -> None:
             continue
         rounds = [int(r) for r in sched["RoundNumber"].dropna().tolist() if r >= 1]
         for rnd in rounds:
-            log.info("Pulling %s round %s", season, rnd)
-            race_df = f1.race_results(season, rnd)
-            if race_df is not None and not race_df.empty:
-                all_race_rows.extend(_race_records(race_df))
-            quali_df = f1.quali_results(season, rnd)
-            if quali_df is not None and not quali_df.empty:
-                all_quali_rows.extend(_quali_records(quali_df))
+            need_race = (season, rnd) not in race_done_keys
+            need_quali = (season, rnd) not in quali_done_keys
+            if not need_race and not need_quali:
+                log.info("Skipping %s round %s (both cached)", season, rnd)
+                continue
+            log.info("Pulling %s round %s (race=%s, quali=%s)", season, rnd, need_race, need_quali)
+            if need_race:
+                race_df = f1.race_results(season, rnd)
+                if race_df is not None and not race_df.empty:
+                    all_race_rows.extend(_race_records(race_df))
+            if need_quali:
+                quali_df_rnd = f1.quali_results(season, rnd)
+                if quali_df_rnd is not None and not quali_df_rnd.empty:
+                    all_quali_rows.extend(_quali_records(quali_df_rnd))
+            # Save checkpoint after each round so we can resume on rate-limit kill
+            pd.DataFrame(all_race_rows).to_parquet(checkpoint, index=False)
+            if all_quali_rows:
+                pd.DataFrame(all_quali_rows).to_parquet(checkpoint_q, index=False)
 
     races_df = pd.DataFrame(all_race_rows)
     quali_df = pd.DataFrame(all_quali_rows)

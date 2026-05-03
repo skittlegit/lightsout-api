@@ -5,12 +5,18 @@ This module is NOT imported by the API runtime — keeps cold start fast.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 log = logging.getLogger(__name__)
+
+# Seconds to sleep between consecutive API calls to stay under 200 calls/h
+_CALL_DELAY = 0.5
+# Max retries on RateLimitExceededError before giving up on a session
+_MAX_RETRIES = 5
 
 
 def init_cache(cache_dir: Path) -> None:
@@ -20,13 +26,41 @@ def init_cache(cache_dir: Path) -> None:
     fastf1.Cache.enable_cache(str(cache_dir))
 
 
+def _with_backoff(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) retrying on RateLimitExceededError."""
+    delay = 20  # initial backoff seconds
+    for attempt in range(_MAX_RETRIES):
+        try:
+            time.sleep(_CALL_DELAY)
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if "RateLimitExceeded" in type(e).__name__ or "rate" in str(e).lower():
+                wait = delay * (2 ** attempt)
+                log.warning("Rate limit hit — waiting %ds before retry %d/%d", wait, attempt + 1, _MAX_RETRIES)
+                time.sleep(wait)
+            else:
+                raise
+    raise RuntimeError(f"Exceeded {_MAX_RETRIES} retries due to rate limiting")
+
+
 def load_session(season: int, round_: int, kind: str):
-    """kind: 'R' (race), 'Q' (qualifying)."""
+    """kind: 'R' (race), 'Q' (qualifying).
+
+    Qualifying sessions need laps=True AND messages=True so FastF1 can
+    identify deleted laps and correctly compute Q1/Q2/Q3 best times
+    in session.results.
+    """
     import fastf1
 
-    session = fastf1.get_session(season, round_, kind)
-    session.load(laps=False, telemetry=False, weather=False, messages=False)
-    return session
+    needs_laps = kind == "Q"
+    needs_messages = kind == "Q"
+
+    def _load():
+        session = fastf1.get_session(season, round_, kind)
+        session.load(laps=needs_laps, telemetry=False, weather=False, messages=needs_messages)
+        return session
+
+    return _with_backoff(_load)
 
 
 def race_results(season: int, round_: int) -> Optional[pd.DataFrame]:
@@ -59,7 +93,7 @@ def season_schedule(season: int) -> Optional[pd.DataFrame]:
     import fastf1
 
     try:
-        return fastf1.get_event_schedule(season, include_testing=False)
+        return _with_backoff(fastf1.get_event_schedule, season, include_testing=False)
     except Exception as e:  # noqa: BLE001
         log.warning("season_schedule(%s) failed: %s", season, e)
         return None

@@ -72,7 +72,11 @@ def _fit_bundle(
         log.info("Fitting q=%.2f on %d rows", q, len(df_train))
         models[f"q{int(q * 100):02d}"] = _fit_quantile(X_train, y_train, q)
 
-    metrics = _evaluate_finish(models, X_val, y_val, df_val)
+    metrics = _evaluate_finish(models, X_val, y_val, df_val) if not df_val.empty else {
+        "n_val_races": 0, "spearman_rho_mean": float("nan"),
+        "mae": float("nan"), "win_pick_accuracy": float("nan"),
+        "podium_hit_rate": float("nan"), "brier_winner": float("nan"),
+    }
     bundle = {
         "version": version,
         "features": features,
@@ -166,8 +170,9 @@ def train(out_dir: Path) -> None:
     # ---- post-quali finish ----
     sub = df[df["mode"] == "post_quali"].reset_index(drop=True)
     if not sub.empty:
-        train_df = sub[sub["season"] < val_season].reset_index(drop=True)
-        val_df = sub[sub["season"] == val_season].reset_index(drop=True)
+        postq_val_season = int(sub["season"].max())
+        train_df = sub[sub["season"] < postq_val_season].reset_index(drop=True)
+        val_df = sub[sub["season"] == postq_val_season].reset_index(drop=True)
         bundle, metrics = _fit_bundle(
             train_df, val_df, POST_QUALI_FEATURES, "finish_position", version="postq-v1.0",
         )
@@ -179,8 +184,9 @@ def train(out_dir: Path) -> None:
     # ---- pole (quali gap regression) ----
     if quali_path.exists():
         qdf = pd.read_parquet(quali_path)
-        train_df = qdf[qdf["season"] < val_season].reset_index(drop=True)
-        val_df = qdf[qdf["season"] == val_season].reset_index(drop=True)
+        pole_val_season = int(qdf["season"].max())
+        train_df = qdf[qdf["season"] < pole_val_season].reset_index(drop=True)
+        val_df = qdf[qdf["season"] == pole_val_season].reset_index(drop=True)
         models: dict[str, lgb.Booster] = {}
         for q in _QUANTILES:
             log.info("Fitting pole q=%.2f", q)
