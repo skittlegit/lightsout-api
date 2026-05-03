@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+.env.local
+
+# FastF1 cache
+fastf1_cache/
+
+# Model artifacts & training data
+ml/artifacts/*.pkl
+ml/artifacts/.tmp/
+ml/data/*.parquet
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
