@@ -4,7 +4,6 @@ Validation = held-out most-recent full season. Reports per-race Spearman ρ,
 MAE, win-pick accuracy, podium hit rate, Brier score on win prob.
 
 Each saved bundle is a dict::
-
     {
         "version": "preq-v1.<n>",
         "features": [...],

@@ -10,7 +10,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",

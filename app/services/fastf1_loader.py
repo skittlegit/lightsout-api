@@ -18,7 +18,6 @@ _CALL_DELAY = 0.5
 # Max retries on RateLimitExceededError before giving up on a session
 _MAX_RETRIES = 5
 
-
 def init_cache(cache_dir: Path) -> None:
     import fastf1
 

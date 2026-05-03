@@ -24,7 +24,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 _scheduler = BackgroundScheduler(timezone="UTC")
 
-
 def _auto_retrain_job() -> None:
     """Runs in background thread: rebuild dataset then retrain models."""
     import shutil
