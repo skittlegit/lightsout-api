@@ -31,7 +31,7 @@ from ml.features import (
 )
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")   
 
 # ---------------------------------------------------------------------------
 # Helpers — extract clean per-driver records from FastF1 results frames
