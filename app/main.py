@@ -59,6 +59,52 @@ def _auto_retrain_job() -> None:
     log.info("[auto-retrain] done — models reloaded: %s", predictor.loaded_models())
 
 
+def _quali_probe_job() -> None:
+    """Runs Saturday evenings — checks if qualifying has finished and invalidates
+    the prediction cache so the next request generates fresh post-quali
+    predictions automatically.
+
+    The predict_round endpoint already fetches quali results from Jolpica and
+    switches to post-quali mode on every cache miss; this job just ensures the
+    stale pre-quali cache is cleared promptly after qualifying ends.
+    """
+    import asyncio
+    from datetime import date
+
+    from app.cache import invalidate_prediction
+    from app.services.jolpica import jolpica
+
+    log.info("[quali-probe] checking for qualifying results")
+
+    async def _probe():
+        season = date.today().year
+        try:
+            races = await jolpica.schedule(season)
+        except Exception as e:  # noqa: BLE001
+            log.warning("[quali-probe] schedule fetch failed: %s", e)
+            return
+        nxt = next((r for r in races if r["is_next"]), None)
+        if nxt is None:
+            log.info("[quali-probe] no upcoming race found")
+            return
+        rnd = nxt["round"]
+        try:
+            has_quali = await jolpica.has_qualifying(season, rnd)
+        except Exception as e:  # noqa: BLE001
+            log.warning("[quali-probe] quali fetch failed for round %s: %s", rnd, e)
+            return
+        if has_quali:
+            invalidated = invalidate_prediction(season, rnd)
+            log.info(
+                "[quali-probe] qualifying found for %s round %s — cache invalidated: %s",
+                season, rnd, invalidated,
+            )
+        else:
+            log.info("[quali-probe] qualifying not yet available for %s round %s", season, rnd)
+
+    asyncio.run(_probe())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -71,7 +117,7 @@ async def lifespan(app: FastAPI):
     )
     log.info("Models loaded: %s", predictor.loaded_models())
 
-    # Start weekly auto-retrain scheduler if enabled
+    # Start scheduler jobs if enabled
     cron = settings.auto_retrain_cron.strip()
     if cron:
         _scheduler.add_job(
@@ -82,10 +128,20 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
+        # Probe for qualifying results every hour on Saturday & Sunday afternoons
+        # (15:00–22:00 UTC covers all time zones where qualy runs)
+        _scheduler.add_job(
+            _quali_probe_job,
+            CronTrigger(day_of_week="sat,sun", hour="15-22", minute=10, timezone="UTC"),
+            id="quali_probe",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         _scheduler.start()
-        log.info("Auto-retrain scheduler started (cron: '%s' UTC)", cron)
+        log.info("Scheduler started — retrain cron: '%s' UTC", cron)
     else:
-        log.info("Auto-retrain disabled (AUTO_RETRAIN_CRON is empty)")
+        log.info("Scheduler disabled (AUTO_RETRAIN_CRON is empty)")
 
     yield
 
@@ -112,14 +168,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
-    next_run = None
-    job = _scheduler.get_job("auto_retrain")
-    if job and job.next_run_time:
-        next_run = job.next_run_time.isoformat()
+    retrain_job = _scheduler.get_job("auto_retrain")
+    quali_job = _scheduler.get_job("quali_probe")
     return {
         "status": "ok",
         "models_loaded": predictor.loaded_models(),
-        "next_auto_retrain": next_run,
+        "next_auto_retrain": retrain_job.next_run_time.isoformat() if retrain_job and retrain_job.next_run_time else None,
+        "next_quali_probe": quali_job.next_run_time.isoformat() if quali_job and quali_job.next_run_time else None,
     }
 
 
