@@ -13,6 +13,11 @@ fastf1_cache/
 ml/artifacts/*.pkl
 ml/artifacts/.tmp/
 ml/data/*.parquet
+# ...but the two training sets must ship with the repo: the API loads them at
+# runtime for historical context (_load_history). Without them, deploys fall
+# back to neutral features and predictions come out flat. Checkpoints stay ignored.
+!ml/data/training.parquet
+!ml/data/quali_training.parquet
 
 # IDE
 .vscode/
