@@ -72,18 +72,47 @@ def load_session(season: int, round_: int, kind: str):
     return _with_backoff(_load)
 
 
+def _results_missing(df: Optional[pd.DataFrame]) -> bool:
+    """True when a results frame has no usable classification.
+
+    FastF1 swallows upstream (Ergast/Jolpica) failures and returns the entry
+    list with an all-NaN ``Position`` column instead of raising, so emptiness —
+    not an exception — is the only signal that the fetch did not really succeed.
+    """
+    if df is None or df.empty or "Position" not in df.columns:
+        return True
+    return bool(df["Position"].isna().all())
+
+
+# Short, bounded retry when results come back empty. A transient Jolpica 429
+# clears in a few seconds; a race that simply has no data yet (future/cancelled)
+# stays empty, so we cap retries low to avoid stalling the build on those.
+_EMPTY_RETRIES = 2
+_EMPTY_RETRY_WAIT = 8
+
+
 def race_results(season: int, round_: int) -> Optional[pd.DataFrame]:
-    try:
-        s = load_session(season, round_, "R")
-        df = s.results.copy()
-        df["season"] = season
-        df["round"] = round_
-        df["race_name"] = s.event.get("EventName", "")
-        df["circuit"] = s.event.get("Location", "")
-        return df
-    except Exception as e:  # noqa: BLE001
-        log.warning("race_results(%s, %s) failed: %s", season, round_, e)
-        return None
+    for attempt in range(_EMPTY_RETRIES + 1):
+        try:
+            s = load_session(season, round_, "R")
+            df = s.results.copy()
+        except Exception as e:  # noqa: BLE001
+            log.warning("race_results(%s, %s) failed: %s", season, round_, e)
+            return None
+        if not _results_missing(df):
+            df["season"] = season
+            df["round"] = round_
+            df["race_name"] = s.event.get("EventName", "")
+            df["circuit"] = s.event.get("Location", "")
+            return df
+        if attempt < _EMPTY_RETRIES:
+            log.warning(
+                "race_results(%s, %s): empty results (likely throttled), retry %d/%d in %ds",
+                season, round_, attempt + 1, _EMPTY_RETRIES, _EMPTY_RETRY_WAIT,
+            )
+            time.sleep(_EMPTY_RETRY_WAIT)
+    log.warning("race_results(%s, %s): no results after retries — skipping", season, round_)
+    return None
 
 
 def quali_results(season: int, round_: int) -> Optional[pd.DataFrame]:

@@ -51,7 +51,11 @@ def _race_records(df: pd.DataFrame) -> list[dict]:
                 "driver_name": f"{row.get('FirstName', '')} {row.get('LastName', '')}".strip(),
                 "team": str(row.get("TeamName", "")),
                 "grid_position": _safe_int(row.get("GridPosition"), 20),
-                "finish_position": _safe_int(row.get("Position"), 20),
+                # finish_position is the TRAINING LABEL — never fabricate it.
+                # When results are unavailable (race not yet run, or an upstream
+                # fetch failure), leave it null so the assembly stage drops the
+                # row instead of inventing a P20 finish that poisons the model.
+                "finish_position": _int_or_none(row.get("Position")),
                 "points": float(row.get("Points") or 0.0),
                 "status": str(row.get("Status", "")),
             })
@@ -91,6 +95,17 @@ def _safe_int(v, default: int) -> int:
         return int(v)
     except (ValueError, TypeError):
         return default
+
+
+def _int_or_none(v) -> int | None:
+    """Like _safe_int but returns None for missing values — used for labels,
+    where a fabricated default would silently corrupt training."""
+    try:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return None
+        return int(v)
+    except (ValueError, TypeError):
+        return None
 
 
 def _td_seconds(v) -> float | None:
@@ -173,6 +188,22 @@ def build(seasons: range, out_dir: Path) -> None:
         raise RuntimeError("No race data pulled — check FastF1 cache and connectivity.")
 
     races_df = races_df.sort_values(["season", "round"]).reset_index(drop=True)
+
+    # Drop races without real results so they never reach training/feature code:
+    #  - rows with a null finish_position (new builds, via _int_or_none)
+    #  - whole races where every finish_position is identical, which only happens
+    #    when results were missing and an older build defaulted them all to P20
+    #    (a real race always has a distinct finishing order).
+    before = len(races_df)
+    races_df = races_df[races_df["finish_position"].notna()]
+    valid_mask = races_df.groupby(["season", "round"])["finish_position"].transform("nunique") > 1
+    races_df = races_df[valid_mask].reset_index(drop=True)
+    dropped = before - len(races_df)
+    if dropped:
+        log.warning("Dropped %d driver-rows from races with missing/fabricated results", dropped)
+    if races_df.empty:
+        raise RuntimeError("No races with valid results after filtering — check upstream data source.")
+
     quali_df = quali_df.sort_values(["season", "round"]).reset_index(drop=True) if not quali_df.empty else quali_df
 
     # 2) For each (season, round) build features using ONLY data strictly prior.
