@@ -20,9 +20,19 @@ _MAX_RETRIES = 5
     
 def init_cache(cache_dir: Path) -> None:
     import fastf1
+    import fastf1.ergast.interface as ergast_interface
+
+    from app.config import get_settings
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     fastf1.Cache.enable_cache(str(cache_dir))
+
+    # FastF1 3.4.4 sources race classification (Position/GridPosition/Points/
+    # Status) from the Ergast API, but ergast.com has been shut down. Without
+    # this, session.results returns the entry list with NaN positions and the
+    # dataset builder silently defaults every finish to P20 — poisoning the
+    # models. Repoint the backend at Jolpica, the Ergast-compatible replacement.
+    ergast_interface.BASE_URL = get_settings().jolpica_base_url.rstrip("/")
 
 
 def _with_backoff(fn, *args, **kwargs):
