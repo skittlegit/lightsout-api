@@ -19,6 +19,10 @@ calendar_cache: TTLCache[str, Any] = TTLCache(maxsize=16, ttl=60 * 60 * 24)
 # 6h for predictions; manually invalidated by /refresh after qualifying
 predictions_cache: TTLCache[str, Any] = TTLCache(maxsize=128, ttl=60 * 60 * 6)
 
+# 30min for current-season results/quali used as live form context.
+# Short TTL so a freshly-completed race feeds the model within half an hour.
+current_form_cache: TTLCache[str, Any] = TTLCache(maxsize=8, ttl=60 * 30)
+
 
 def predictions_key(season: int, round_: int) -> str:
     return f"{season}:{round_}"

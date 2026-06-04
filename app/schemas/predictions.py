@@ -32,6 +32,7 @@ class Race(BaseModel):
     race_date: str  # ISO date
     is_next: bool = False
     is_completed: bool = False
+    has_sprint: bool = False
 
 
 class CalendarResponse(BaseModel):

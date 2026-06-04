@@ -81,6 +81,7 @@ class JolpicaClient:
                 "race_date": r.get("date", ""),
                 "is_completed": bool(r.get("date", "")) and r["date"] < today,
                 "is_next": False,  # filled in below
+                "has_sprint": "Sprint" in r,  # Jolpica includes a Sprint block on sprint weekends
             })
         # mark the first not-yet-completed race as next
         for race in out:
@@ -119,6 +120,97 @@ class JolpicaClient:
     async def has_qualifying(self, season: int, round_: int) -> bool:
         results = await self.qualifying(season, round_)
         return len(results) > 0
+
+    # ---------- bulk current-season context (for live form features) ----------
+    async def _get_races_paginated(self, path: str) -> list[dict]:
+        """Fetch every page of an Ergast-style endpoint, concatenating Races."""
+        out: list[dict] = []
+        offset, limit = 0, 100
+        while True:
+            sep = "&" if "?" in path else "?"
+            data = await self._get_json(f"{path}{sep}limit={limit}&offset={offset}")
+            mr = data.get("MRData", {})
+            races = mr.get("RaceTable", {}).get("Races", [])
+            out.extend(races)
+            try:
+                total = int(mr.get("total", 0))
+            except (TypeError, ValueError):
+                total = len(out)
+            offset += limit
+            if not races or offset >= total:
+                break
+        return out
+
+    async def season_results(self, season: int) -> list[dict]:
+        """Per-driver finishing results for every completed round this season.
+
+        Shaped to match the training-history schema so it can be appended to
+        the static historical context that powers form / points features.
+        """
+        races = await self._get_races_paginated(f"{season}/results.json")
+        out: list[dict] = []
+        for r in races:
+            rnd = int(r.get("round", 0))
+            circuit = r.get("Circuit", {}).get("circuitName", "")
+            for res in r.get("Results", []):
+                d = res.get("Driver", {})
+                ctor = res.get("Constructor", {})
+                out.append({
+                    "season": season,
+                    "round": rnd,
+                    "circuit": circuit,
+                    "driver_code": d.get("code") or _fallback_code(d),
+                    "team": ctor.get("name", ""),
+                    "finish_position": int(res.get("position", 0) or 0),
+                    "points": float(res.get("points", 0) or 0.0),
+                })
+        return out
+
+    async def season_sprint_results(self, season: int) -> list[dict]:
+        """Per-driver sprint-race results for sprint weekends this season.
+
+        Same schema as ``season_results`` so sprint finishes and points feed
+        the same form / points features — sprints award championship points and
+        are part of a driver's recent form.
+        """
+        races = await self._get_races_paginated(f"{season}/sprint.json")
+        out: list[dict] = []
+        for r in races:
+            rnd = int(r.get("round", 0))
+            circuit = r.get("Circuit", {}).get("circuitName", "")
+            for res in r.get("SprintResults", []):
+                d = res.get("Driver", {})
+                ctor = res.get("Constructor", {})
+                out.append({
+                    "season": season,
+                    "round": rnd,
+                    "circuit": circuit,
+                    "driver_code": d.get("code") or _fallback_code(d),
+                    "team": ctor.get("name", ""),
+                    "finish_position": int(res.get("position", 0) or 0),
+                    "points": float(res.get("points", 0) or 0.0),
+                })
+        return out
+
+    async def season_qualifying(self, season: int) -> list[dict]:
+        """Per-driver qualifying positions for every completed round this season."""
+        races = await self._get_races_paginated(f"{season}/qualifying.json")
+        out: list[dict] = []
+        for r in races:
+            rnd = int(r.get("round", 0))
+            circuit = r.get("Circuit", {}).get("circuitName", "")
+            for q in r.get("QualifyingResults", []):
+                d = q.get("Driver", {})
+                ctor = q.get("Constructor", {})
+                out.append({
+                    "season": season,
+                    "round": rnd,
+                    "circuit": circuit,
+                    "driver_code": d.get("code") or _fallback_code(d),
+                    "team": ctor.get("name", ""),
+                    "quali_position": int(q.get("position", 0) or 0),
+                })
+        return out
 
 
 def _fallback_code(driver: dict) -> str:

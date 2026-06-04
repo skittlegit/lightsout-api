@@ -15,7 +15,12 @@ import httpx
 import pandas as pd
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
-from app.cache import invalidate_prediction, predictions_cache, predictions_key
+from app.cache import (
+    current_form_cache,
+    invalidate_prediction,
+    predictions_cache,
+    predictions_key,
+)
 from app.config import get_settings
 from app.schemas.predictions import (
     ModePrediction,
@@ -68,6 +73,33 @@ async def _resolve_race(season: int, round_: int) -> dict:
         if r["round"] == round_:
             return r
     raise HTTPException(status_code=404, detail=f"Race {season} round {round_} not found")
+
+
+async def _current_season_frames(season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Live current-season race + quali results from Jolpica, shaped like the
+    training history. Cached briefly so we don't re-fetch on every cache miss.
+
+    This is what makes the model reflect *this* season's form: without it the
+    only context is the static 2018–2025 parquet, so a dominant new-regulation
+    pairing (e.g. 2026 Mercedes / Antonelli) would never surface.
+    """
+    key = f"form:{season}"
+    cached = current_form_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        races = await jolpica.season_results(season)
+        sprints = await jolpica.season_sprint_results(season)
+        quali = await jolpica.season_qualifying(season)
+    except httpx.HTTPError as e:  # noqa: BLE001
+        log.warning("current-season form fetch failed for %s: %s", season, e)
+        return pd.DataFrame(), pd.DataFrame()
+    # Sprint results share the schema and count toward form + championship
+    # points, so merge them into the race-results frame.
+    race_rows = races + sprints
+    frames = (pd.DataFrame(race_rows), pd.DataFrame(quali))
+    current_form_cache[key] = frames
+    return frames
 
 
 async def _build_driver_contexts(season: int) -> list[DriverContext]:
@@ -131,6 +163,17 @@ async def predict_round(round_: int, season: int = Query(default=None)):
         )
 
     prior_races, prior_quali = _load_history()
+
+    # Fold in this season's completed rounds (strictly before the target round
+    # to avoid leakage) so form/points features reflect current-season pace.
+    cur_races, cur_quali = await _current_season_frames(season)
+    if not cur_races.empty:
+        cur_races = cur_races[cur_races["round"] < round_]
+        prior_races = pd.concat([prior_races, cur_races], ignore_index=True)
+    if not cur_quali.empty:
+        cur_quali = cur_quali[cur_quali["round"] < round_]
+        prior_quali = pd.concat([prior_quali, cur_quali], ignore_index=True)
+
     settings = get_settings()
     race_ctx = RaceContext(
         season=season,
