@@ -1,4 +1,4 @@
-"""Build the training parquet from FastF1 data, 2018-2025.
+"""Build the training parquet from FastF1 data, 2018 to the current season.
 
 Produces:
   ml/data/training.parquet         — two rows per (driver, race): mode='pre_quali' and mode='post_quali'
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -359,7 +360,10 @@ def build(seasons: range, out_dir: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--start", type=int, default=2018)
-    p.add_argument("--end", type=int, default=2025)
+    # End at the current calendar year so the weekly auto-retrain always pulls
+    # the ongoing season. Future rounds return empty results and are skipped;
+    # each completed round flows into training as the season progresses.
+    p.add_argument("--end", type=int, default=date.today().year)
     p.add_argument("--out-dir", type=Path, default=Path("ml/data"))
     args = p.parse_args()
     build(range(args.start, args.end + 1), args.out_dir)

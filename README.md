@@ -23,7 +23,7 @@ python -m venv .venv
 pip install -r requirements.txt
 cp .env.example .env
 
-# 1. Build training set (slow — pulls FastF1 data 2018-2025)
+# 1. Build training set (slow — pulls FastF1 data from 2018 to the current season)
 python -m ml.build_dataset
 
 # 2. Train all three model bundles
