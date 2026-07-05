@@ -15,9 +15,14 @@ ml/artifacts/.tmp/
 ml/data/*.parquet
 # ...but the two training sets must ship with the repo: the API loads them at
 # runtime for historical context (_load_history). Without them, deploys fall
-# back to neutral features and predictions come out flat. Checkpoints stay ignored.
+# back to neutral features and predictions come out flat.
 !ml/data/training.parquet
 !ml/data/quali_training.parquet
+# The dataset-build checkpoints also ship so the retrain CI job resumes instead
+# of re-pulling every season from scratch on each run (see retrain.yml). They are
+# small (~110 KB) and hold the raw per-round results the build appends to.
+!ml/data/_checkpoint.parquet
+!ml/data/_checkpoint_quali.parquet
 
 # IDE
 .vscode/

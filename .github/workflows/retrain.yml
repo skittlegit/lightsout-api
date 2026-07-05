@@ -52,13 +52,16 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # -f: *.pkl is gitignored but force-tracked; the training parquets
-          # are un-ignored by negation rules and add normally.
+          # -f: *.pkl is gitignored but force-tracked; the parquets are
+          # un-ignored by negation rules and add normally. The checkpoints are
+          # committed too so the next run resumes from this run's pulled rounds.
           git add -f ml/artifacts/pre_quali_finish.pkl \
                      ml/artifacts/post_quali_finish.pkl \
                      ml/artifacts/pole.pkl \
                      ml/data/training.parquet \
-                     ml/data/quali_training.parquet
+                     ml/data/quali_training.parquet \
+                     ml/data/_checkpoint.parquet \
+                     ml/data/_checkpoint_quali.parquet
           if git diff --cached --quiet; then
             echo "No artifact changes — skipping commit"
           else
