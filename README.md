@@ -49,10 +49,11 @@ uvicorn app.main:app --reload
 | POST   | `/api/predictions/{round}/refresh` | `X-API-Key` required |
 | POST   | `/api/retrain` | `X-API-Key`; runs in background, returns 202 |
 
-## Deployment (Railway)
+## Deployment (Render, free tier)
 
-- Builder: NIXPACKS (see `railway.toml`)
-- Mount `fastf1_cache` as a persistent volume
-- Set `CORS_ORIGINS`, `RETRAIN_API_KEY` env vars
-- Model artifacts are gitignored — fetch them at deploy time from S3/R2 or a `models` branch
-- If artifacts are missing the API still serves standings/calendar; predictions return `model_unavailable`
+- Blueprint: `render.yaml` — Docker build from `Dockerfile`, health check on `/health`, `plan: free`
+- Set `CORS_ORIGINS` and `RETRAIN_API_KEY` when prompted on first blueprint apply
+- Model artifacts (`ml/artifacts/*.pkl`) and training parquets are committed, so the image is self-contained; the FastF1 cache is ephemeral (no persistent disk on free tier)
+- If artifacts fail to load the API still serves standings/calendar; predictions return `model_unavailable`
+- Free instances sleep after ~15 min idle (first request after that takes ~1 min to cold-start) and can't run in-process retraining, so `AUTO_RETRAIN_CRON=off` — the weekly retrain runs in GitHub Actions instead (`.github/workflows/retrain.yml`), which commits fresh artifacts and triggers a Render auto-deploy
+- The weekend quali probe still runs in-process whenever the instance happens to be awake; stale pre-quali predictions otherwise age out via the 6h cache TTL or the next cold start

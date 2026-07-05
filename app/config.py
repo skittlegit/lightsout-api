@@ -71,7 +71,8 @@ class Settings(BaseSettings):
 
     # Weekly auto-retrain schedule (cron syntax, UTC).
     # Default: every Tuesday at 03:00 UTC (after most race weekends).
-    # Set AUTO_RETRAIN_CRON="" to disable.
+    # Set AUTO_RETRAIN_CRON=off to disable ("" won't work: env_ignore_empty
+    # above discards empty env vars, so the default cron would apply).
     auto_retrain_cron: str = Field(default="0 3 * * 2", alias="AUTO_RETRAIN_CRON")
 
 

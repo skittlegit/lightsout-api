@@ -1,0 +1,68 @@
+# Weekly model retrain, replacing the in-process APScheduler job that ran on
+# Railway. The Render free-tier instance sleeps when idle and only has 512 MB
+# RAM, so training happens here instead: rebuild the dataset, retrain, commit
+# the refreshed parquets + pickles, and let the push trigger Render's
+# auto-deploy of a new image with the artifacts baked in.
+name: retrain
+
+on:
+  schedule:
+    - cron: "0 3 * * 2" # Tuesdays 03:00 UTC, after most race weekends
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Restore FastF1 cache
+        # Rolling key: the exact key never hits, so the newest previous cache
+        # is restored and a fresh one saved after the run. build_dataset skips
+        # rounds already cached, so weekly runs only fetch the new race.
+        uses: actions/cache@v4
+        with:
+          path: fastf1_cache
+          key: fastf1-${{ github.run_id }}
+          restore-keys: |
+            fastf1-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build dataset
+        run: python -m ml.build_dataset
+
+      - name: Train models
+        run: python -m ml.train --out-dir ml/artifacts
+
+      - name: Commit and push updated artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # -f: *.pkl is gitignored but force-tracked; the training parquets
+          # are un-ignored by negation rules and add normally.
+          git add -f ml/artifacts/pre_quali_finish.pkl \
+                     ml/artifacts/post_quali_finish.pkl \
+                     ml/artifacts/pole.pkl \
+                     ml/data/training.parquet \
+                     ml/data/quali_training.parquet
+          if git diff --cached --quiet; then
+            echo "No artifact changes — skipping commit"
+          else
+            git commit -m "chore: weekly model retrain ($(date -u +%Y-%m-%d))"
+            git pull --rebase origin ${GITHUB_REF_NAME}
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi

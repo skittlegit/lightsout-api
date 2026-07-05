@@ -116,8 +116,14 @@ async def lifespan(app: FastAPI):
     )
     log.info("Models loaded: %s", predictor.loaded_models())
 
-    # Start scheduler jobs if enabled
+    # In-process retrain is opt-out: hosts without a persistent disk or with
+    # instances that spin down when idle (e.g. Render free tier) should set
+    # AUTO_RETRAIN_CRON=off and retrain out-of-band instead (see
+    # .github/workflows/retrain.yml). Note "" cannot disable it from the
+    # environment — env_ignore_empty in Settings swallows empty vars.
     cron = settings.auto_retrain_cron.strip()
+    if cron.lower() in {"off", "disabled", "none"}:
+        cron = ""
     if cron:
         _scheduler.add_job(
             _auto_retrain_job,
@@ -127,20 +133,24 @@ async def lifespan(app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
-        # Probe for qualifying results every hour on Saturday & Sunday afternoons
-        # (15:00–22:00 UTC covers all time zones where qualy runs)
-        _scheduler.add_job(
-            _quali_probe_job,
-            CronTrigger(day_of_week="sat,sun", hour="15-22", minute=10, timezone="UTC"),
-            id="quali_probe",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-        _scheduler.start()
+    # Probe for qualifying results every hour on Saturday & Sunday afternoons
+    # (15:00–22:00 UTC covers all time zones where qualy runs). Registered even
+    # when auto-retrain is off — it only fires while the process is awake, so
+    # it costs nothing on hosts that sleep idle instances.
+    _scheduler.add_job(
+        _quali_probe_job,
+        CronTrigger(day_of_week="sat,sun", hour="15-22", minute=10, timezone="UTC"),
+        id="quali_probe",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.start()
+    if cron:
         log.info("Scheduler started — retrain cron: '%s' UTC", cron)
     else:
-        log.info("Scheduler disabled (AUTO_RETRAIN_CRON is empty)")
+        log.info("Scheduler started — auto-retrain disabled (AUTO_RETRAIN_CRON=%r)",
+                 settings.auto_retrain_cron)
 
     yield
 

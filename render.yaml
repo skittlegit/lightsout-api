@@ -1,0 +1,29 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Free-tier setup: no persistent disk (the FastF1 cache is ephemeral and
+# rebuilt as needed) and no in-process retraining — the instance spins down
+# when idle and has 512 MB RAM, so weekly retraining runs in GitHub Actions
+# instead (.github/workflows/retrain.yml) and commits fresh artifacts, which
+# triggers an auto-deploy here.
+services:
+  - type: web
+    name: lightsout-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    # region: singapore  # oregon (default) | ohio | virginia | frankfurt | singapore
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Prompted for in the dashboard when the blueprint is first applied —
+      # copy the values across from Railway.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: RETRAIN_API_KEY
+        sync: false
+      - key: JOLPICA_BASE_URL
+        value: https://api.jolpi.ca/ergast/f1
+      - key: MC_SIMULATIONS
+        value: "10000"
+      - key: AUTO_RETRAIN_CRON
+        value: "off"
