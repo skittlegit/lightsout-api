@@ -115,7 +115,8 @@ def _td_seconds(v) -> float | None:
     if isinstance(v, pd.Timedelta):
         return float(v.total_seconds()) if not pd.isna(v) else None
     try:
-        return float(v)
+        value = float(v)
+        return value if np.isfinite(value) and value > 0 else None
     except (ValueError, TypeError):
         return None
 
@@ -125,13 +126,24 @@ def _abbr(row) -> str:
     return last or "UNK"
 
 
+def _clean_races(frame: pd.DataFrame) -> pd.DataFrame:
+    """Invalid classifications must remain retryable, never checkpointed as done."""
+    if frame.empty:
+        return frame
+    frame = frame.drop_duplicates(["season", "round", "driver_code"], keep="last")
+    frame = frame[frame["finish_position"].notna() & (frame["finish_position"] > 0)]
+    valid = frame.groupby(["season", "round"])["finish_position"].transform("nunique") > 1
+    return frame[valid].reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def build(seasons: range, out_dir: Path) -> None:
+def build(seasons: range, out_dir: Path, *, assemble_only: bool = False) -> None:
     settings = get_settings()
-    f1.init_cache(settings.fastf1_cache_dir)
+    if not assemble_only:
+        f1.init_cache(settings.fastf1_cache_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Resume support: load already-pulled rows so we don't re-hit the API.
@@ -145,22 +157,26 @@ def build(seasons: range, out_dir: Path) -> None:
     quali_done_keys: set[tuple] = set()
 
     if checkpoint.exists():
-        prev = pd.read_parquet(checkpoint)
+        prev = _clean_races(pd.read_parquet(checkpoint))
         all_race_rows = prev.to_dict("records")
         race_done_keys = {(int(r["season"]), int(r["round"])) for r in all_race_rows}
         log.info("Resuming: %d race rows already loaded (%d rounds done)", len(all_race_rows), len(race_done_keys))
     if checkpoint_q.exists():
         prev_q = pd.read_parquet(checkpoint_q)
+        prev_q = prev_q.drop_duplicates(["season", "round", "driver_code"], keep="last")
         all_quali_rows = prev_q.to_dict("records")
         # Only consider a quali round done if it has at least one valid lap time
         valid_q = prev_q[prev_q["best_quali_s"].notna()]
         quali_done_keys = {(int(r["season"]), int(r["round"])) for r in valid_q.to_dict("records")}
         log.info("Resuming: %d quali rows already loaded (%d rounds with valid times)", len(all_quali_rows), len(quali_done_keys))
 
-    for season in seasons:
+    for season in (() if assemble_only else seasons):
         sched = f1.season_schedule(season)
         if sched is None:
             continue
+        # Avoid loading future entry lists into checkpoints and wasting retries.
+        if "EventDate" in sched:
+            sched = sched[pd.to_datetime(sched["EventDate"], utc=True) < pd.Timestamp.now(tz="UTC")]
         rounds = [int(r) for r in sched["RoundNumber"].dropna().tolist() if r >= 1]
         for rnd in rounds:
             need_race = (season, rnd) not in race_done_keys
@@ -172,18 +188,30 @@ def build(seasons: range, out_dir: Path) -> None:
             if need_race:
                 race_df = f1.race_results(season, rnd)
                 if race_df is not None and not race_df.empty:
-                    all_race_rows.extend(_race_records(race_df))
+                    records = _clean_races(pd.DataFrame(_race_records(race_df)))
+                    all_race_rows.extend(records.to_dict("records"))
             if need_quali:
                 quali_df_rnd = f1.quali_results(season, rnd)
                 if quali_df_rnd is not None and not quali_df_rnd.empty:
+                    all_quali_rows = [r for r in all_quali_rows if (r["season"], r["round"]) != (season, rnd)]
                     all_quali_rows.extend(_quali_records(quali_df_rnd))
             # Save checkpoint after each round so we can resume on rate-limit kill
             pd.DataFrame(all_race_rows).to_parquet(checkpoint, index=False)
             if all_quali_rows:
                 pd.DataFrame(all_quali_rows).to_parquet(checkpoint_q, index=False)
 
-    races_df = pd.DataFrame(all_race_rows)
+    races_df = _clean_races(pd.DataFrame(all_race_rows))
     quali_df = pd.DataFrame(all_quali_rows)
+    if not quali_df.empty:
+        quali_df = quali_df.drop_duplicates(["season", "round", "driver_code"], keep="last")
+        # FastF1 qualifying results omit the circuit. Resolve it from the race
+        # so pole track-history features have the same context as inference.
+        circuits = races_df.drop_duplicates(["season", "round"])[["season", "round", "circuit"]]
+        quali_df = quali_df.drop(columns="circuit", errors="ignore").merge(circuits, on=["season", "round"], how="left")
+        quali_df["circuit"] = quali_df["circuit"].fillna("")
+    races_df.to_parquet(checkpoint, index=False)
+    if not quali_df.empty:
+        quali_df.to_parquet(checkpoint_q, index=False)
 
     if races_df.empty:
         raise RuntimeError("No race data pulled — check FastF1 cache and connectivity.")
@@ -275,8 +303,8 @@ def build(seasons: range, out_dir: Path) -> None:
             grid = grid_features(shaped)
 
         # Pre-quali features
-        pre_df = build_inference_features(drivers, race_ctx, prior_races, prior_quali)
-        pre_df = fill_missing(pre_df, PRE_QUALI_FEATURES)
+        pre_features = build_inference_features(drivers, race_ctx, prior_races, prior_quali)
+        pre_df = fill_missing(pre_features, PRE_QUALI_FEATURES)
 
         # Post-quali features (only if we have grid)
         post_df = None
@@ -285,8 +313,7 @@ def build(seasons: range, out_dir: Path) -> None:
             post_df = fill_missing(post_df, POST_QUALI_FEATURES)
 
         # Pole features (pre_quali + extras)
-        pole_df = build_inference_features(drivers, race_ctx, prior_races, prior_quali)
-        pole_df = fill_missing(pole_df, POLE_FEATURES)
+        pole_df = fill_missing(pre_features, POLE_FEATURES)
 
         # Map driver_code -> finishing position label
         finish_by_code = {
@@ -365,8 +392,9 @@ def main() -> None:
     # each completed round flows into training as the season progresses.
     p.add_argument("--end", type=int, default=date.today().year)
     p.add_argument("--out-dir", type=Path, default=Path("ml/data"))
+    p.add_argument("--assemble-only", action="store_true", help="Rebuild features from existing raw checkpoints without upstream fetches")
     args = p.parse_args()
-    build(range(args.start, args.end + 1), args.out_dir)
+    build(range(args.start, args.end + 1), args.out_dir, assemble_only=args.assemble_only)
 
 
 if __name__ == "__main__":

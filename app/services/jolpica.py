@@ -158,11 +158,15 @@ class JolpicaClient:
                 out.append({
                     "season": season,
                     "round": rnd,
+                    "race_name": r.get("raceName", ""),
                     "circuit": circuit,
                     "driver_code": d.get("code") or _fallback_code(d),
+                    "driver_name": f"{d.get('givenName', '')} {d.get('familyName', '')}".strip(),
                     "team": ctor.get("name", ""),
                     "finish_position": int(res.get("position", 0) or 0),
+                    "grid_position": int(res.get("grid", 0) or 0),
                     "points": float(res.get("points", 0) or 0.0),
+                    "status": res.get("status", ""),
                 })
         return out
 

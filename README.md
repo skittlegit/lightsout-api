@@ -26,6 +26,12 @@ cp .env.example .env
 # 1. Build training set (slow — pulls FastF1 data from 2018 to the current season)
 python -m ml.build_dataset
 
+# Refresh published race classifications directly (defaults to this season)
+python -m ml.refresh_results
+
+# Rebuild features from shipped checkpoints without downloading sessions
+python -m ml.build_dataset --assemble-only
+
 # 2. Train all three model bundles
 python -m ml.train
 
@@ -57,3 +63,12 @@ uvicorn app.main:app --reload
 - If artifacts fail to load the API still serves standings/calendar; predictions return `model_unavailable`
 - Free instances sleep after ~15 min idle (first request after that takes ~1 min to cold-start) and can't run in-process retraining, so `AUTO_RETRAIN_CRON=off` — the weekly retrain runs in GitHub Actions instead (`.github/workflows/retrain.yml`), which commits fresh artifacts and triggers a Render auto-deploy
 - The weekend quali probe still runs in-process whenever the instance happens to be awake; stale pre-quali predictions otherwise age out via the 6h cache TTL or the next cold start
+
+Calendar and standings update from Jolpica independently of retraining. Point
+the frontend at `https://lightsout-api.onrender.com/api`; the old Railway host
+can leave the frontend showing its offline fallback even when retraining succeeds.
+Prediction history uses raw checkpoints to preserve points and merges live
+results by season, round, and driver, strictly before the target race. Race
+rosters use qualifying entries or the latest known field rather than all
+season standings. Validation metrics use held-out races; saved models are
+subsequently fitted on every available race, including the ongoing season.

@@ -13,6 +13,8 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from ml.normalization import canonical_circuit, canonical_team
+
 
 # ---------------------------------------------------------------------------
 # Feature lists
@@ -96,7 +98,7 @@ def lookup_track(circuit: str) -> dict:
     """Fuzzy-match a circuit name to TRACK_META; falls back to permanent/0.5."""
     if not circuit:
         return {"type": "permanent", "overtaking": 0.5}
-    key = circuit.lower()
+    key = canonical_circuit(circuit).lower()
     for k, v in TRACK_META.items():
         if k.lower() in key or key in k.lower():
             return v
@@ -153,7 +155,7 @@ def track_history(
         return 10.5, 0
     rows = prior_results[
         (prior_results["driver_code"] == driver_code)
-        & (prior_results["circuit"].str.contains(circuit, case=False, na=False)
+        & (prior_results["circuit"].map(canonical_circuit).eq(canonical_circuit(circuit))
            if circuit else False)
     ]
     visits = len(rows)
@@ -190,7 +192,7 @@ def driver_track_quali_history(
         return 10.5
     rows = prior_quali[
         (prior_quali["driver_code"] == driver_code)
-        & (prior_quali["circuit"].str.contains(circuit, case=False, na=False))
+        & prior_quali["circuit"].map(canonical_circuit).eq(canonical_circuit(circuit))
     ]
     rows = rows.sort_values(["season", "round"]).tail(n)
     if rows.empty:
@@ -235,14 +237,20 @@ def build_inference_features(
     populated; the predictor selects the right column subset per model).
     """
     track = lookup_track(race.circuit)
+    prior_race_results = prior_race_results.copy()
+    prior_quali_results = prior_quali_results.copy()
+    for frame in (prior_race_results, prior_quali_results):
+        if "team" in frame:
+            frame["team"] = frame["team"].map(canonical_team)
 
     rows: list[dict] = []
     for d in drivers:
         f3 = driver_form(prior_race_results, d.driver_code, 3)
         f5 = driver_form(prior_race_results, d.driver_code, 5)
-        tf3 = team_form(prior_race_results, d.team, 3)
+        team = canonical_team(d.team)
+        tf3 = team_form(prior_race_results, team, 3)
         d_pts_pct = season_points_pct(prior_race_results, "driver_code", d.driver_code, race.season)
-        t_pts_pct = season_points_pct(prior_race_results, "team", d.team, race.season)
+        t_pts_pct = season_points_pct(prior_race_results, "team", team, race.season)
         th_avg, th_visits = track_history(prior_race_results, d.driver_code, race.circuit)
 
         row: dict = {
@@ -265,7 +273,7 @@ def build_inference_features(
             "driver_team_tenure_months": float(d.team_tenure_months),
             # pole-model extras
             "driver_quali_form_last3": driver_quali_form(prior_quali_results, d.driver_code),
-            "team_quali_form_last3": team_quali_form(prior_quali_results, d.team),
+            "team_quali_form_last3": team_quali_form(prior_quali_results, team),
             "driver_track_quali_history": driver_track_quali_history(
                 prior_quali_results, d.driver_code, race.circuit
             ),
@@ -300,8 +308,10 @@ def grid_features(quali_results: list[dict]) -> dict[str, dict]:
         try:
             if ":" in s:
                 m, rest = s.split(":", 1)
-                return int(m) * 60 + float(rest)
-            return float(s)
+                value = int(m) * 60 + float(rest)
+            else:
+                value = float(s)
+            return value if np.isfinite(value) and value > 0 else None
         except (ValueError, TypeError):
             return None
 

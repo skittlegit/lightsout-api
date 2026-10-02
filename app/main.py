@@ -55,6 +55,9 @@ def _auto_retrain_job() -> None:
         post_quali_path=settings.model_post_quali_path,
         pole_path=settings.model_pole_path,
     )
+    from app.cache import current_form_cache, predictions_cache
+    predictions_cache.clear()
+    current_form_cache.clear()
     log.info("[auto-retrain] done — models reloaded: %s", predictor.loaded_models())
 
 

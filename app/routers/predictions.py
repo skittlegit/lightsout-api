@@ -21,7 +21,7 @@ from app.cache import (
     predictions_cache,
     predictions_key,
 )
-from app.config import get_settings
+from app.config import REPO_ROOT, get_settings
 from app.schemas.predictions import (
     ModePrediction,
     PredictionResponse,
@@ -38,27 +38,35 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Lazy-loaded historical context for inference
 # ---------------------------------------------------------------------------
-# We need prior race + quali results so feature-builder can compute form and
-# track-history. Loaded from ml/data/training.parquet on first use; reload
-# whenever the file's mtime changes.
+# Raw checkpoint history retains championship points and qualifying positions.
+# Reload when either history file changes; engineered training rows are a fallback.
 _history_cache: dict = {"mtime": None, "races": None, "quali": None}
 
 
 def _load_history() -> tuple[pd.DataFrame, pd.DataFrame]:
-    races_path = Path("ml/data/training.parquet")
-    quali_path = Path("ml/data/quali_training.parquet")
+    data_dir = REPO_ROOT / "ml" / "data"
+    # Raw results retain points, which engineered training rows do not contain.
+    races_path = data_dir / "_checkpoint.parquet"
+    quali_path = data_dir / "_checkpoint_quali.parquet"
+    if not races_path.exists():
+        races_path = data_dir / "training.parquet"
+    if not quali_path.exists():
+        quali_path = data_dir / "quali_training.parquet"
 
     if not races_path.exists():
         return pd.DataFrame(), pd.DataFrame()
 
-    mtime = races_path.stat().st_mtime
+    mtime = (races_path.stat().st_mtime_ns, quali_path.stat().st_mtime_ns if quali_path.exists() else None)
     if _history_cache["mtime"] != mtime:
         log.info("Loading historical context from %s", races_path)
         df = pd.read_parquet(races_path)
-        # training.parquet has both modes; for context we only need the labels.
-        # Use mode == 'post_quali' rows since they include both finish & quali info.
-        races = df[df["mode"] == "post_quali"].copy() if "mode" in df.columns else df.copy()
+        races = df.drop_duplicates(["season", "round", "driver_code"], keep="last").copy()
+        races = races[races["finish_position"].notna() & (races["finish_position"] > 0)]
+        if "points" not in races:
+            races["points"] = 0.0
         quali = pd.read_parquet(quali_path) if quali_path.exists() else pd.DataFrame()
+        if not quali.empty:
+            quali = quali.drop_duplicates(["season", "round", "driver_code"], keep="last")
         _history_cache.update({"mtime": mtime, "races": races, "quali": quali})
 
     return _history_cache["races"], _history_cache["quali"]
@@ -89,23 +97,29 @@ async def _current_season_frames(season: int) -> tuple[pd.DataFrame, pd.DataFram
         return cached
     try:
         races = await jolpica.season_results(season)
-        sprints = await jolpica.season_sprint_results(season)
         quali = await jolpica.season_qualifying(season)
     except httpx.HTTPError as e:  # noqa: BLE001
         log.warning("current-season form fetch failed for %s: %s", season, e)
         return pd.DataFrame(), pd.DataFrame()
-    # Sprint results share the schema and count toward form + championship
-    # points, so merge them into the race-results frame.
-    race_rows = races + sprints
-    frames = (pd.DataFrame(race_rows), pd.DataFrame(quali))
+    # Training form uses Grand Prix results. Mixing sprints into only inference
+    # changes the meaning of last-three-races and double-counts round keys.
+    frames = (pd.DataFrame(races), pd.DataFrame(quali))
     current_form_cache[key] = frames
     return frames
 
 
-async def _build_driver_contexts(season: int) -> list[DriverContext]:
-    standings = await jolpica.driver_standings(season)
-    if not standings:
-        return []
+async def _build_driver_contexts(
+    season: int, round_: int, quali_rows: list[dict], results: pd.DataFrame,
+) -> list[DriverContext]:
+    # Standings contain every driver who appeared this season, including
+    # substitutes. Use this race's qualifying roster or the latest known field.
+    rows = quali_rows
+    if not rows and not results.empty:
+        eligible = results[(results["season"] == season) & (results["round"] <= round_)]
+        if not eligible.empty:
+            rows = eligible[eligible["round"] == eligible["round"].max()].to_dict("records")
+    if not rows:
+        rows = await jolpica.driver_standings(season)
     return [
         DriverContext(
             driver_code=s["driver_code"],
@@ -113,8 +127,16 @@ async def _build_driver_contexts(season: int) -> list[DriverContext]:
             team=s["team"],
             team_tenure_months=12.0,  # TODO: derive from contract data
         )
-        for s in standings
+        for s in rows
     ]
+
+
+def _merge_prior(history: pd.DataFrame, live: pd.DataFrame, season: int, round_: int) -> pd.DataFrame:
+    frame = pd.concat([history, live], ignore_index=True)
+    if frame.empty:
+        return frame
+    prior = (frame["season"] < season) | ((frame["season"] == season) & (frame["round"] < round_))
+    return frame[prior].drop_duplicates(["season", "round", "driver_code"], keep="last").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +164,14 @@ async def predict_round(round_: int, season: int = Query(default=None)):
 
     try:
         race = await _resolve_race(season, round_)
-        drivers = await _build_driver_contexts(season)
         # Probe whether qualifying has run for this round
         quali_rows = await jolpica.qualifying(season, round_)
+        cur_races, cur_quali = await _current_season_frames(season)
+        history_races, history_quali = _load_history()
+        roster = pd.concat([history_races, cur_races], ignore_index=True)
+        if not roster.empty:
+            roster = roster.drop_duplicates(["season", "round", "driver_code"], keep="last")
+        drivers = await _build_driver_contexts(season, round_, quali_rows, roster)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Upstream Jolpica error: {e}") from e
 
@@ -162,17 +189,8 @@ async def predict_round(round_: int, season: int = Query(default=None)):
             message="Model artifacts not loaded — train and deploy them first.",
         )
 
-    prior_races, prior_quali = _load_history()
-
-    # Fold in this season's completed rounds (strictly before the target round
-    # to avoid leakage) so form/points features reflect current-season pace.
-    cur_races, cur_quali = await _current_season_frames(season)
-    if not cur_races.empty:
-        cur_races = cur_races[cur_races["round"] < round_]
-        prior_races = pd.concat([prior_races, cur_races], ignore_index=True)
-    if not cur_quali.empty:
-        cur_quali = cur_quali[cur_quali["round"] < round_]
-        prior_quali = pd.concat([prior_quali, cur_quali], ignore_index=True)
+    prior_races = _merge_prior(history_races, cur_races, season, round_)
+    prior_quali = _merge_prior(history_quali, cur_quali, season, round_)
 
     settings = get_settings()
     race_ctx = RaceContext(
@@ -236,4 +254,5 @@ async def refresh_round(
 ):
     season = season or date.today().year
     invalidated = invalidate_prediction(season, round_)
+    current_form_cache.pop(f"form:{season}", None)
     return RefreshResponse(season=season, round=round_, invalidated=invalidated)

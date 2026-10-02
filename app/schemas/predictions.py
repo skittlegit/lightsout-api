@@ -56,7 +56,7 @@ class DriverPrediction(BaseModel):
     podium_probability: float
     points_probability: float
     position_distribution: list[float] = Field(
-        ..., description="Length 20, sums to 1.0; index k = P(finish in P(k+1))"
+        ..., description="One probability per finishing position (at least 20); sums to 1.0; index k = P(finish in P(k+1))"
     )
 
 

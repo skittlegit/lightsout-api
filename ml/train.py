@@ -50,6 +50,7 @@ def _fit_quantile(X: pd.DataFrame, y: np.ndarray, q: float) -> lgb.Booster:
         "bagging_fraction": 0.85,
         "bagging_freq": 5,
         "verbose": -1,
+        "num_threads": 4,
     }
     return lgb.train(params, train, num_boost_round=600)
 
@@ -76,12 +77,21 @@ def _fit_bundle(
         "mae": float("nan"), "win_pick_accuracy": float("nan"),
         "podium_hit_rate": float("nan"), "brier_winner": float("nan"),
     }
+    # Validation stays held out for metrics; deployed models must then learn
+    # from all available races, including the ongoing season just refreshed.
+    all_rows = pd.concat([df_train, df_val], ignore_index=True)
+    for q in _QUANTILES:
+        models[f"q{int(q * 100):02d}"] = _fit_quantile(
+            all_rows[features], all_rows[target].to_numpy(dtype=float), q,
+        )
     bundle = {
         "version": version,
         "features": features,
         "models": models,
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "metrics": metrics,
+        "training_rows": len(all_rows),
+        "training_through": all_rows[["season", "round"]].sort_values(["season", "round"]).iloc[-1].to_dict(),
     }
     return bundle, metrics
 
@@ -107,8 +117,6 @@ def _evaluate_finish(
         if len(idx) < 5:
             continue
         n_races += 1
-        race_mu = mu[idx - df_val.index[0]] if df_val.index.is_monotonic_increasing else mu[grp.index.argsort()]
-        race_sigma = sigma[idx - df_val.index[0]] if df_val.index.is_monotonic_increasing else sigma[grp.index.argsort()]
         # Safer: positional lookup
         positional = np.searchsorted(df_val.index.to_numpy(), grp.index.to_numpy())
         race_mu = mu[positional]
@@ -161,7 +169,7 @@ def train(out_dir: Path) -> None:
     train_df = sub[sub["season"] < val_season].reset_index(drop=True)
     val_df = sub[sub["season"] == val_season].reset_index(drop=True)
     bundle, metrics = _fit_bundle(
-        train_df, val_df, PRE_QUALI_FEATURES, "finish_position", version="preq-v1.0",
+        train_df, val_df, PRE_QUALI_FEATURES, "finish_position", version="preq-v1.1",
     )
     log.info("pre-quali metrics: %s", metrics)
     joblib.dump(bundle, out_dir / "pre_quali_finish.pkl")
@@ -173,7 +181,7 @@ def train(out_dir: Path) -> None:
         train_df = sub[sub["season"] < postq_val_season].reset_index(drop=True)
         val_df = sub[sub["season"] == postq_val_season].reset_index(drop=True)
         bundle, metrics = _fit_bundle(
-            train_df, val_df, POST_QUALI_FEATURES, "finish_position", version="postq-v1.0",
+            train_df, val_df, POST_QUALI_FEATURES, "finish_position", version="postq-v1.1",
         )
         log.info("post-quali metrics: %s", metrics)
         joblib.dump(bundle, out_dir / "post_quali_finish.pkl")
@@ -197,12 +205,18 @@ def train(out_dir: Path) -> None:
             val_df["gap_to_pole_s"].to_numpy(float),
             models["q50"].predict(val_df[POLE_FEATURES]),
         )) if not val_df.empty else float("nan")
+        for q in _QUANTILES:
+            models[f"q{int(q * 100):02d}"] = _fit_quantile(
+                qdf[POLE_FEATURES], qdf["gap_to_pole_s"].to_numpy(float), q,
+            )
         bundle = {
-            "version": "pole-v1.0",
+            "version": "pole-v1.1",
             "features": POLE_FEATURES,
             "models": models,
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "metrics": {"mae_seconds": pole_mae},
+            "training_rows": len(qdf),
+            "training_through": qdf[["season", "round"]].sort_values(["season", "round"]).iloc[-1].to_dict(),
         }
         log.info("pole metrics: mae=%.3fs", pole_mae)
         joblib.dump(bundle, out_dir / "pole.pkl")
