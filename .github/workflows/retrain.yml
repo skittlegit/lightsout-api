@@ -1,5 +1,4 @@
-# Weekly model retrain, replacing the in-process APScheduler job that ran on
-# Railway. The Render free-tier instance sleeps when idle and only has 512 MB
+# Weekly model retrain, replacing the in-process APScheduler job. The Render free-tier instance sleeps when idle and only has 512 MB
 # RAM, so training happens here instead: rebuild the dataset, retrain, commit
 # the refreshed parquets + pickles, and let the push trigger Render's
 # auto-deploy of a new image with the artifacts baked in.
@@ -25,7 +24,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Restore FastF1 cache
@@ -48,6 +47,9 @@ jobs:
       - name: Refresh current-season race classifications
         run: python -m ml.refresh_results
 
+      - name: Backfill race weather
+        run: python -m ml.weather
+
       - name: Build dataset
         run: python -m ml.build_dataset
 
@@ -67,7 +69,7 @@ jobs:
                      ml/data/training.parquet \
                      ml/data/quali_training.parquet \
                      ml/data/_checkpoint.parquet \
-                     ml/data/_checkpoint_quali.parquet
+                     ml/data/_checkpoint_quali.parquet                      ml/data/weather.parquet
           if git diff --cached --quiet; then
             echo "No artifact changes — skipping commit"
           else

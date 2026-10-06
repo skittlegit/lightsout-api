@@ -43,7 +43,7 @@ def _evaluate(bundle: dict, df: pd.DataFrame, features: list[str]) -> dict:
             rhos.append(rho)
         maes.append(float(np.mean(np.abs(race_mu - actual))))
 
-        prob = run_simulation(race_mu, race_sigma, n_sims=5_000)
+        prob = run_simulation(race_mu, race_sigma, n_sims=5_000, rng=np.random.default_rng(0))
         win_ok += int(int(np.argmax(prob[:, 0])) == int(np.argmin(actual)))
         pred_pod = set(np.argsort(-prob[:, :3].sum(axis=1))[:3].tolist())
         actual_pod = set(np.argsort(actual)[:3].tolist())

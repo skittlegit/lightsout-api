@@ -72,12 +72,20 @@ class ModePrediction(BaseModel):
     drivers: list[DriverPrediction]
 
 
+class RaceWeather(BaseModel):
+    rain_probability: float = Field(..., description="0–1 chance of a wet race window")
+    temp_c: float
+    source: Literal["forecast", "observed", "climatology"]
+
+
 class PredictionResponse(BaseModel):
     season: int
     round: int
     race_name: str
     circuit: str
     race_date: str
+    race_time: Optional[str] = None
+    weather: Optional[RaceWeather] = None
     pre_quali: Optional[ModePrediction] = None
     post_quali: Optional[ModePrediction] = None
     status: Literal["ok", "model_unavailable"] = "ok"

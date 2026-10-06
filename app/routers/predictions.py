@@ -27,11 +27,13 @@ from app.config import REPO_ROOT, get_settings
 from app.schemas.predictions import (
     ModePrediction,
     PredictionResponse,
+    RaceWeather,
     RefreshResponse,
 )
 from app.services.jolpica import jolpica
 from app.services.predictor import predictor
 from ml.features import DriverContext, RaceContext, grid_features
+from ml.weather import race_weather
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -211,13 +213,14 @@ async def _compute_prediction(season: int, round_: int, cache_key: str) -> Predi
     prior_quali = _merge_prior(history_quali, cur_quali, season, round_)
 
     settings = get_settings()
+    rain, temp_c, weather_source = await race_weather(race)
     race_ctx = RaceContext(
         season=season,
         round=round_,
         circuit=race["circuit"],
         round_in_season=round_,
-        weather_rain_prob=0.1,  # TODO: hook to Open-Meteo
-        weather_temp_c=22.0,
+        weather_rain_prob=rain,
+        weather_temp_c=temp_c,
     )
 
     # LightGBM + Monte Carlo is CPU-bound (~1s); keep it off the event loop so
@@ -254,6 +257,8 @@ async def _compute_prediction(season: int, round_: int, cache_key: str) -> Predi
         race_name=race["race_name"],
         circuit=race["circuit"],
         race_date=race["race_date"],
+        race_time=race.get("race_time"),
+        weather=RaceWeather(rain_probability=rain, temp_c=temp_c, source=weather_source),
         pre_quali=pre,
         post_quali=post,
     )

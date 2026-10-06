@@ -14,6 +14,14 @@ At inference, μ = q50 and σ ≈ (q90 − q10) / 2.5631 per driver. Monte Carlo
 ~10 000 race orderings (`s_i ~ N(μ_i, σ_i)`, sort, tally positions) to produce the
 full P(driver, position) joint distribution. Win prob, podium prob, points prob, and
 expected position are all derived from the same simulation — internally consistent.
+The simulation is seeded per race and model version, so identical inputs always
+produce identical forecasts.
+
+Weather features come from Open-Meteo (`ml/weather.py`). Training uses observed
+race-window weather (share of wet hours, mean temperature) stored in
+`ml/data/weather.parquet`. Inference uses the forecast's peak precipitation
+probability within 15 days of the race, and circuit climatology beyond that.
+Prediction responses include the `weather` used and its `source`.
 
 ## Quick start
 
@@ -24,6 +32,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # 1. Build training set (slow — pulls FastF1 data from 2018 to the current season)
+python -m ml.weather            # race-window weather from Open-Meteo (incremental)
 python -m ml.build_dataset
 
 # Refresh published race classifications directly (defaults to this season)
@@ -65,8 +74,7 @@ uvicorn app.main:app --reload
 - The weekend quali probe still runs in-process whenever the instance happens to be awake; stale pre-quali predictions otherwise age out via the 6h cache TTL or the next cold start
 
 Calendar and standings update from Jolpica independently of retraining. Point
-the frontend at `https://lightsout-api.onrender.com/api`; the old Railway host
-can leave the frontend showing its offline fallback even when retraining succeeds.
+the frontend at `https://lightsout-api.onrender.com/api`.
 Prediction history uses raw checkpoints to preserve points and merges live
 results by season, round, and driver, strictly before the target race. Race
 rosters use qualifying entries or the latest known field rather than all

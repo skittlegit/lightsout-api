@@ -20,6 +20,7 @@ import pandas as pd
 
 from app.config import get_settings
 from app.services import fastf1_loader as f1
+from ml import weather
 from ml.features import (
     POLE_FEATURES,
     POST_QUALI_FEATURES,
@@ -241,6 +242,9 @@ def build(seasons: range, out_dir: Path, *, assemble_only: bool = False) -> None
     quali_train_rows: list[dict] = []
 
     keys = races_df[["season", "round"]].drop_duplicates().values.tolist()
+    # Observed race-window weather (python -m ml.weather); missing rows fall
+    # back to the same neutral priors the models used before weather existed.
+    weather_table = weather.load_table(out_dir / "weather.parquet")
 
     for season, rnd in keys:
         prior_mask = (races_df["season"] < season) | (
@@ -273,13 +277,14 @@ def build(seasons: range, out_dir: Path, *, assemble_only: bool = False) -> None
             )
             for _, r in race_rows.iterrows()
         ]
+        rain, temp_c = weather.lookup(weather_table, int(season), int(rnd))
         race_ctx = RaceContext(
             season=int(season),
             round=int(rnd),
             circuit=circuit,
             round_in_season=round_in_season,
-            weather_rain_prob=0.1,
-            weather_temp_c=22.0,
+            weather_rain_prob=rain,
+            weather_temp_c=temp_c,
         )
 
         # Quali results for this race for grid_features

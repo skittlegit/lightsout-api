@@ -78,7 +78,13 @@ class JolpicaClient:
             rows = []
             for r in races:
                 circuit = r.get("Circuit", {})
+                location = circuit.get("Location", {})
                 rows.append({
+                    # circuit_id / lat / long feed weather lookups; the public
+                    # Race schema drops them from API responses.
+                    "circuit_id": circuit.get("circuitId", ""),
+                    "lat": float(location["lat"]) if location.get("lat") else None,
+                    "long": float(location["long"]) if location.get("long") else None,
                     "season": int(r.get("season", season)),
                     "round": int(r.get("round", 0)),
                     "race_name": r.get("raceName", ""),

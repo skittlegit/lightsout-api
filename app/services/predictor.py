@@ -12,6 +12,7 @@ A bundle pickle is a dict::
 from __future__ import annotations
 
 import logging
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -129,7 +130,10 @@ class Predictor:
         mu = np.asarray(q50, dtype=np.float64)
         sigma = np.clip((q90 - q10) / _NORMAL_Q90_Q10_Z, 0.5, None)
 
-        prob = run_simulation(mu, sigma, n_sims=n_simulations)
+        # Seed per race + model so identical inputs give identical forecasts;
+        # otherwise near-tied drivers swap places on every cache refresh.
+        seed = zlib.crc32(f"{race.season}:{race.round}:{mode}:{bundle.version}".encode())
+        prob = run_simulation(mu, sigma, n_sims=n_simulations, rng=np.random.default_rng(seed))
         # Pad to 20 columns if fewer drivers (frontend always expects len 20)
         n = prob.shape[0]
         n_pad = max(0, 20 - n)
