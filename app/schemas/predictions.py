@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DriverStanding(BaseModel):
@@ -30,6 +30,7 @@ class Race(BaseModel):
     circuit: str
     country: str
     race_date: str  # ISO date
+    race_time: Optional[str] = None  # UTC start time, e.g. "13:00:00Z"
     is_next: bool = False
     is_completed: bool = False
     has_sprint: bool = False
@@ -61,6 +62,9 @@ class DriverPrediction(BaseModel):
 
 
 class ModePrediction(BaseModel):
+    # model_version is a public field name; silence pydantic's "model_" warning.
+    model_config = ConfigDict(protected_namespaces=())
+
     generated_at: datetime
     model_version: str
     n_simulations: int

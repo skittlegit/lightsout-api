@@ -17,6 +17,7 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         env_ignore_empty=True,
+        protected_namespaces=("settings_",),  # allow model_*_path fields
     )
 
     # CORS — stored as raw string so pydantic-settings never JSON-decodes it;

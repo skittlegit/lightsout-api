@@ -49,11 +49,11 @@ uvicorn app.main:app --reload
 | GET    | `/health` | Reports which models loaded |
 | GET    | `/api/standings/drivers?season=2026` | Cached 1h |
 | GET    | `/api/standings/constructors?season=2026` | Cached 1h |
-| GET    | `/api/calendar?season=2026` | Cached 24h |
+| GET    | `/api/calendar?season=2026` | Schedule cached 1h; `is_next`/`is_completed` recomputed per request; includes UTC `race_time` |
 | GET    | `/api/predictions/next` | Resolves next round, returns prediction |
 | GET    | `/api/predictions/{round}?season=2026` | Pre + (if available) post-quali |
 | POST   | `/api/predictions/{round}/refresh` | `X-API-Key` required |
-| POST   | `/api/retrain` | `X-API-Key`; runs in background, returns 202 |
+| POST   | `/api/retrain` | `X-API-Key`; runs in background, returns 202 (409 if one is already running) |
 
 ## Deployment (Render, free tier)
 
