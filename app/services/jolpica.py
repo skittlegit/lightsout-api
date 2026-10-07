@@ -10,11 +10,16 @@ from datetime import date
 from typing import Any
 
 import httpx
+from cachetools import TTLCache
 
 from app.config import get_settings
 
 
 _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+
+# Raw schedule rows per season. The is_next / is_completed flags depend on
+# today's date, so they are recomputed on every call rather than cached.
+_schedule_cache: TTLCache[int, list[dict]] = TTLCache(maxsize=8, ttl=60 * 60)
 
 
 class JolpicaClient:
@@ -66,23 +71,35 @@ class JolpicaClient:
 
     # ---------- schedule ----------
     async def schedule(self, season: int) -> list[dict]:
-        data = await self._get_json(f"{season}.json")
-        races = data.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+        rows = _schedule_cache.get(season)
+        if rows is None:
+            data = await self._get_json(f"{season}.json?limit=100")
+            races = data.get("MRData", {}).get("RaceTable", {}).get("Races", [])
+            rows = []
+            for r in races:
+                circuit = r.get("Circuit", {})
+                location = circuit.get("Location", {})
+                rows.append({
+                    # circuit_id / lat / long feed weather lookups; the public
+                    # Race schema drops them from API responses.
+                    "circuit_id": circuit.get("circuitId", ""),
+                    "lat": float(location["lat"]) if location.get("lat") else None,
+                    "long": float(location["long"]) if location.get("long") else None,
+                    "season": int(r.get("season", season)),
+                    "round": int(r.get("round", 0)),
+                    "race_name": r.get("raceName", ""),
+                    "circuit": circuit.get("circuitName", ""),
+                    "country": circuit.get("Location", {}).get("country", ""),
+                    "race_date": r.get("date", ""),
+                    "race_time": r.get("time"),  # UTC, e.g. "13:00:00Z"
+                    "has_sprint": "Sprint" in r,  # Jolpica includes a Sprint block on sprint weekends
+                })
+            _schedule_cache[season] = rows
         today = date.today().isoformat()
-        out: list[dict] = []
-        for r in races:
-            circuit = r.get("Circuit", {})
-            out.append({
-                "season": int(r.get("season", season)),
-                "round": int(r.get("round", 0)),
-                "race_name": r.get("raceName", ""),
-                "circuit": circuit.get("circuitName", ""),
-                "country": circuit.get("Location", {}).get("country", ""),
-                "race_date": r.get("date", ""),
-                "is_completed": bool(r.get("date", "")) and r["date"] < today,
-                "is_next": False,  # filled in below
-                "has_sprint": "Sprint" in r,  # Jolpica includes a Sprint block on sprint weekends
-            })
+        out = [
+            {**r, "is_completed": bool(r["race_date"]) and r["race_date"] < today, "is_next": False}
+            for r in rows
+        ]
         # mark the first not-yet-completed race as next
         for race in out:
             if not race["is_completed"]:

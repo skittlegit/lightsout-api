@@ -27,11 +27,9 @@ def init_cache(cache_dir: Path) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     fastf1.Cache.enable_cache(str(cache_dir))
 
-    # FastF1 3.4.4 sources race classification (Position/GridPosition/Points/
-    # Status) from the Ergast API, but ergast.com has been shut down. Without
-    # this, session.results returns the entry list with NaN positions and the
-    # dataset builder silently defaults every finish to P20 — poisoning the
-    # models. Repoint the backend at Jolpica, the Ergast-compatible replacement.
+    # FastF1 sources race classification from the Ergast-compatible API and
+    # defaults to Jolpica since 3.5; pin it to our configured JOLPICA_BASE_URL
+    # so training and the API always read the same upstream.
     ergast_interface.BASE_URL = get_settings().jolpica_base_url.rstrip("/")
 
 

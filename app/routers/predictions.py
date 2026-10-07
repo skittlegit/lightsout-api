@@ -6,14 +6,15 @@ POST /{round}/refresh            invalidate cache, requires X-API-Key
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 from typing import Optional
 
 import httpx
 import pandas as pd
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 
 from app.cache import (
     current_form_cache,
@@ -21,18 +22,27 @@ from app.cache import (
     predictions_cache,
     predictions_key,
 )
+from app.auth import require_api_key
 from app.config import REPO_ROOT, get_settings
 from app.schemas.predictions import (
     ModePrediction,
     PredictionResponse,
+    RaceWeather,
     RefreshResponse,
 )
 from app.services.jolpica import jolpica
 from app.services.predictor import predictor
 from ml.features import DriverContext, RaceContext, grid_features
+from ml.weather import race_weather
 
 router = APIRouter()
 log = logging.getLogger(__name__)
+
+_Season = Query(default=None, ge=1950, le=2100)
+
+# One lock per (season, round) so concurrent cold requests compute once and
+# the rest are served from the cache the first request fills.
+_compute_locks: dict[str, asyncio.Lock] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +106,9 @@ async def _current_season_frames(season: int) -> tuple[pd.DataFrame, pd.DataFram
     if cached is not None:
         return cached
     try:
-        races = await jolpica.season_results(season)
-        quali = await jolpica.season_qualifying(season)
+        races, quali = await asyncio.gather(
+            jolpica.season_results(season), jolpica.season_qualifying(season),
+        )
     except httpx.HTTPError as e:  # noqa: BLE001
         log.warning("current-season form fetch failed for %s: %s", season, e)
         return pd.DataFrame(), pd.DataFrame()
@@ -143,7 +154,7 @@ def _merge_prior(history: pd.DataFrame, live: pd.DataFrame, season: int, round_:
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.get("/next", response_model=PredictionResponse)
-async def predict_next(season: int = Query(default=None)):
+async def predict_next(season: int = _Season):
     season = season or date.today().year
     try:
         races = await jolpica.schedule(season)
@@ -156,17 +167,26 @@ async def predict_next(season: int = Query(default=None)):
 
 
 @router.get("/{round_}", response_model=PredictionResponse)
-async def predict_round(round_: int, season: int = Query(default=None)):
+async def predict_round(round_: int, season: int = _Season):
     season = season or date.today().year
     cache_key = predictions_key(season, round_)
     if cache_key in predictions_cache:
         return predictions_cache[cache_key]
+    lock = _compute_locks.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        if cache_key in predictions_cache:
+            return predictions_cache[cache_key]
+        return await _compute_prediction(season, round_, cache_key)
 
+
+async def _compute_prediction(season: int, round_: int, cache_key: str) -> PredictionResponse:
     try:
-        race = await _resolve_race(season, round_)
-        # Probe whether qualifying has run for this round
-        quali_rows = await jolpica.qualifying(season, round_)
-        cur_races, cur_quali = await _current_season_frames(season)
+        # Probe whether qualifying has run for this round alongside the rest.
+        race, quali_rows, (cur_races, cur_quali) = await asyncio.gather(
+            _resolve_race(season, round_),
+            jolpica.qualifying(season, round_),
+            _current_season_frames(season),
+        )
         history_races, history_quali = _load_history()
         roster = pd.concat([history_races, cur_races], ignore_index=True)
         if not roster.empty:
@@ -193,17 +213,21 @@ async def predict_round(round_: int, season: int = Query(default=None)):
     prior_quali = _merge_prior(history_quali, cur_quali, season, round_)
 
     settings = get_settings()
+    rain, temp_c, weather_source = await race_weather(race)
     race_ctx = RaceContext(
         season=season,
         round=round_,
         circuit=race["circuit"],
         round_in_season=round_,
-        weather_rain_prob=0.1,  # TODO: hook to Open-Meteo
-        weather_temp_c=22.0,
+        weather_rain_prob=rain,
+        weather_temp_c=temp_c,
     )
 
+    # LightGBM + Monte Carlo is CPU-bound (~1s); keep it off the event loop so
+    # standings/calendar requests aren't stalled behind a cold forecast.
     # Pre-quali always
-    pre = predictor.predict_mode(
+    pre = await run_in_threadpool(
+        predictor.predict_mode,
         mode="pre_quali",
         drivers=drivers,
         race=race_ctx,
@@ -216,7 +240,8 @@ async def predict_round(round_: int, season: int = Query(default=None)):
     post: Optional[ModePrediction] = None
     if quali_rows and predictor.post_loaded:
         grid = grid_features(quali_rows)
-        post = predictor.predict_mode(
+        post = await run_in_threadpool(
+            predictor.predict_mode,
             mode="post_quali",
             drivers=drivers,
             race=race_ctx,
@@ -232,6 +257,8 @@ async def predict_round(round_: int, season: int = Query(default=None)):
         race_name=race["race_name"],
         circuit=race["circuit"],
         race_date=race["race_date"],
+        race_time=race.get("race_time"),
+        weather=RaceWeather(rain_probability=rain, temp_c=temp_c, source=weather_source),
         pre_quali=pre,
         post_quali=post,
     )
@@ -239,18 +266,11 @@ async def predict_round(round_: int, season: int = Query(default=None)):
     return response
 
 
-def _require_api_key(x_api_key: str = Header(default="")) -> str:
-    expected = get_settings().retrain_api_key
-    if not expected or x_api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
-    return x_api_key
-
-
 @router.post("/{round_}/refresh", response_model=RefreshResponse)
 async def refresh_round(
     round_: int,
-    season: int = Query(default=None),
-    _: str = Depends(_require_api_key),
+    season: int = _Season,
+    _: str = Depends(require_api_key),
 ):
     season = season or date.today().year
     invalidated = invalidate_prediction(season, round_)

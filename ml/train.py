@@ -127,7 +127,7 @@ def _evaluate_finish(
         if not np.isnan(rho):
             rhos.append(rho)
 
-        prob = run_simulation(race_mu, race_sigma, n_sims=4_000)
+        prob = run_simulation(race_mu, race_sigma, n_sims=4_000, rng=np.random.default_rng(0))
         win_idx_pred = int(np.argmax(prob[:, 0]))
         win_idx_actual = int(np.argmin(actual))
         win_correct += int(win_idx_pred == win_idx_actual)
@@ -169,7 +169,7 @@ def train(out_dir: Path) -> None:
     train_df = sub[sub["season"] < val_season].reset_index(drop=True)
     val_df = sub[sub["season"] == val_season].reset_index(drop=True)
     bundle, metrics = _fit_bundle(
-        train_df, val_df, PRE_QUALI_FEATURES, "finish_position", version="preq-v1.1",
+        train_df, val_df, PRE_QUALI_FEATURES, "finish_position", version="preq-v1.2",
     )
     log.info("pre-quali metrics: %s", metrics)
     joblib.dump(bundle, out_dir / "pre_quali_finish.pkl")
@@ -181,7 +181,7 @@ def train(out_dir: Path) -> None:
         train_df = sub[sub["season"] < postq_val_season].reset_index(drop=True)
         val_df = sub[sub["season"] == postq_val_season].reset_index(drop=True)
         bundle, metrics = _fit_bundle(
-            train_df, val_df, POST_QUALI_FEATURES, "finish_position", version="postq-v1.1",
+            train_df, val_df, POST_QUALI_FEATURES, "finish_position", version="postq-v1.2",
         )
         log.info("post-quali metrics: %s", metrics)
         joblib.dump(bundle, out_dir / "post_quali_finish.pkl")
@@ -210,7 +210,7 @@ def train(out_dir: Path) -> None:
                 qdf[POLE_FEATURES], qdf["gap_to_pole_s"].to_numpy(float), q,
             )
         bundle = {
-            "version": "pole-v1.1",
+            "version": "pole-v1.2",
             "features": POLE_FEATURES,
             "models": models,
             "trained_at": datetime.now(timezone.utc).isoformat(),

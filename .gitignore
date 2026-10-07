@@ -23,6 +23,8 @@ ml/data/*.parquet
 # small (~110 KB) and hold the raw per-round results the build appends to.
 !ml/data/_checkpoint.parquet
 !ml/data/_checkpoint_quali.parquet
+# Observed race-window weather (python -m ml.weather); training features.
+!ml/data/weather.parquet
 
 # IDE
 .vscode/

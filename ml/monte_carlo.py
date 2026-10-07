@@ -52,12 +52,9 @@ def run_simulation(
     sims_idx = np.arange(n_sims)[:, None]
     finish_pos[sims_idx, order] = np.arange(n)[None, :]
 
-    prob = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        counts = np.bincount(finish_pos[:, i], minlength=n)
-        prob[i] = counts / n_sims
-
-    return prob
+    # One bincount over (driver, position) pairs instead of one per driver.
+    flat = (np.arange(n)[None, :] * n + finish_pos).ravel()
+    return np.bincount(flat, minlength=n * n).reshape(n, n) / n_sims
 
 
 def derive_scalars(prob_matrix: np.ndarray) -> dict[str, np.ndarray]:

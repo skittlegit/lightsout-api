@@ -12,6 +12,7 @@ A bundle pickle is a dict::
 from __future__ import annotations
 
 import logging
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -120,16 +121,19 @@ class Predictor:
             return None
 
         feat_cols = PRE_QUALI_FEATURES if mode == "pre_quali" else POST_QUALI_FEATURES
-        df = build_inference_features(
+        features = build_inference_features(
             drivers, race, prior_race_results, prior_quali_results, grid=grid,
         )
-        df = fill_missing(df, feat_cols)
+        df = fill_missing(features, feat_cols)
 
         q10, q50, q90 = bundle.predict_quantiles(df)
         mu = np.asarray(q50, dtype=np.float64)
         sigma = np.clip((q90 - q10) / _NORMAL_Q90_Q10_Z, 0.5, None)
 
-        prob = run_simulation(mu, sigma, n_sims=n_simulations)
+        # Seed per race + model so identical inputs give identical forecasts;
+        # otherwise near-tied drivers swap places on every cache refresh.
+        seed = zlib.crc32(f"{race.season}:{race.round}:{mode}:{bundle.version}".encode())
+        prob = run_simulation(mu, sigma, n_sims=n_simulations, rng=np.random.default_rng(seed))
         # Pad to 20 columns if fewer drivers (frontend always expects len 20)
         n = prob.shape[0]
         n_pad = max(0, 20 - n)
@@ -138,9 +142,9 @@ class Predictor:
 
         scalars = derive_scalars(prob[:, :n])  # use unpadded for scalars
 
-        # Predicted pole only sensible at pre-quali; pole model is separate
-        pole_pred = self._predict_pole(drivers, race, prior_race_results, prior_quali_results) \
-            if mode == "pre_quali" else None
+        # Predicted pole only sensible at pre-quali; pole model is separate but
+        # its features are a subset of the pre-quali frame built above.
+        pole_pred = self._predict_pole(drivers, features) if mode == "pre_quali" else None
 
         # Build per-driver records and sort by expected_position ascending
         records: list[DriverPrediction] = []
@@ -169,17 +173,12 @@ class Predictor:
     def _predict_pole(
         self,
         drivers: list[DriverContext],
-        race: RaceContext,
-        prior_race_results: pd.DataFrame,
-        prior_quali_results: pd.DataFrame,
+        features: pd.DataFrame,
     ) -> Optional[PredictedPole]:
         if self._pole is None:
             return None
 
-        df = build_inference_features(
-            drivers, race, prior_race_results, prior_quali_results,
-        )
-        df = fill_missing(df, POLE_FEATURES)
+        df = fill_missing(features, POLE_FEATURES)
         _, q50, _ = self._pole.predict_quantiles(df)
 
         # Lower predicted gap-to-pole = faster.

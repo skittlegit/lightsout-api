@@ -26,39 +26,10 @@ _scheduler = BackgroundScheduler(timezone="UTC")
 
 def _auto_retrain_job() -> None:
     """Runs in background thread: rebuild dataset then retrain models."""
-    import shutil
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    log.info("[auto-retrain] starting weekly retrain")
-    settings = get_settings()
-    artifacts_dir = Path("ml/artifacts")
-    tmp_dir = artifacts_dir / ".tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    for cmd, label in [
-        ([sys.executable, "-m", "ml.build_dataset"], "build_dataset"),
-        ([sys.executable, "-m", "ml.train", "--out-dir", str(tmp_dir)], "train"),
-    ]:
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-        if result.returncode != 0:
-            log.error("[auto-retrain] %s failed:\n%s", label, result.stderr[-2000:])
-            return
-        log.info("[auto-retrain] %s complete", label)
-
-    for pkl in tmp_dir.glob("*.pkl"):
-        shutil.move(str(pkl), str(artifacts_dir / pkl.name))
-
-    predictor.load(
-        pre_quali_path=settings.model_pre_quali_path,
-        post_quali_path=settings.model_post_quali_path,
-        pole_path=settings.model_pole_path,
-    )
-    from app.cache import current_form_cache, predictions_cache
-    predictions_cache.clear()
-    current_form_cache.clear()
-    log.info("[auto-retrain] done — models reloaded: %s", predictor.loaded_models())
+    if not admin.try_start_retrain():
+        log.warning("[auto-retrain] skipped — a retrain is already running")
+        return
+    admin.run_retrain("auto", rebuild_dataset=True)
 
 
 def _quali_probe_job() -> None:

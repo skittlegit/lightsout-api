@@ -1,4 +1,4 @@
-"""In-memory TTL caches. Three namespaces with different TTLs.
+"""In-memory TTL caches. Several namespaces with different TTLs.
 
 When we scale horizontally these can be swapped for Redis behind the same
 get/set API; for now per-process is fine.
@@ -12,9 +12,6 @@ from cachetools import TTLCache
 
 # 1h for standings (changes after each race)
 standings_cache: TTLCache[str, Any] = TTLCache(maxsize=64, ttl=60 * 60)
-
-# 24h for calendar (rarely changes mid-season)
-calendar_cache: TTLCache[str, Any] = TTLCache(maxsize=16, ttl=60 * 60 * 24)
 
 # 6h for predictions; manually invalidated by /refresh after qualifying
 predictions_cache: TTLCache[str, Any] = TTLCache(maxsize=128, ttl=60 * 60 * 6)
